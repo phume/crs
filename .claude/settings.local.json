@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(where:*)",
+      "Bash(pdflatex:*)",
+      "Bash(copy \"C:\\\\Users\\\\phume\\\\Documents\\\\client_Risk_score\\\\paper\\\\bcrs_paper.pdf\" \"C:\\\\Users\\\\phume\\\\Documents\\\\client_Risk_score\\\\paper\\\\archived\\\\bcrs_paper_v0.1.pdf\")",
+      "WebFetch(domain:fintrac-canafe.canada.ca)"
+    ]
+  }
+}

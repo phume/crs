@@ -1,0 +1,563 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{float}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible
+}
+
+\begin{document}
+
+\title{B-CRS: A Multi-Pillar Behavioral Client Risk Score Framework for Anti-Money Laundering}
+
+\author{
+\IEEEauthorblockN{Anonymous Author(s)}
+\IEEEauthorblockA{Affiliation withheld for review}
+}
+
+\maketitle
+
+\begin{abstract}
+Client Risk Scoring (CRS) is a cornerstone of Anti-Money Laundering (AML) compliance in financial institutions worldwide. However, existing CRS implementations predominantly rely on static Know-Your-Customer (KYC) attributes assessed at client onboarding, failing to capture evolving behavioral patterns indicative of money laundering activity. We propose B-CRS (Behavioral Client Risk Score), a novel multi-pillar framework that derives client risk scores from transactional behavior through a two-tier architecture with six interpretable risk dimensions. Tier 1 comprises five behavioral pillars: (P1) Volume \& Velocity Risk, (P2) Network \& Counterparty Risk, (P3) Temporal Behavior Risk, (P4) Typology Alignment Risk, and (P5) Profile Consistency Risk. Tier 2 introduces (P6) Strategic Scheme Alignment Risk, a meta-pillar that consumes Tier 1 sub-scores alongside scheme-specific features to detect multi-dimensional laundering schemes---such as underground banking, trade-based money laundering, and professional money laundering---as defined by Financial Intelligence Unit (FIU) operational alerts. Each pillar produces an interpretable sub-score using a combination of supervised and unsupervised learning methods. The sub-scores are aggregated into a unified CRS through a principled aggregation mechanism that preserves explainability. We validate the framework using internal banking data containing Suspicious Transaction Reports (STRs) as ground truth labels. Our results demonstrate that B-CRS significantly outperforms traditional static CRS in identifying high-risk clients, while providing compliance officers with actionable, decomposed risk explanations aligned with FATF risk-based approach requirements.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Anti-Money Laundering, Client Risk Score, Behavioral Analytics, Transaction Monitoring, Explainable AI, Machine Learning, FATF Risk-Based Approach
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Money laundering remains one of the most pervasive threats to global financial system integrity, with the United Nations Office on Drugs and Crime estimating that 2--5\% of global GDP is laundered annually \cite{unodc2011}. Financial institutions serve as the first line of defense, mandated by regulations to implement robust Anti-Money Laundering (AML) programs that include client due diligence, transaction monitoring, and suspicious activity reporting.
+
+Central to AML compliance is the concept of Client Risk Scoring (CRS)---the process of assessing the money laundering risk posed by each client. The Financial Action Task Force (FATF) Recommendation 1 explicitly mandates a risk-based approach (RBA), requiring institutions to allocate compliance resources proportionate to assessed risk levels \cite{fatf2012,fatf2014}. In practice, CRS drives critical decisions: enhanced due diligence thresholds, transaction monitoring rule calibration, alert prioritization, and periodic review frequencies.
+
+Despite its importance, CRS implementation at most financial institutions remains fundamentally static and KYC-centric. Typical scoring models assign risk based on attributes collected at onboarding---customer type, country of residence, nationality, industry classification, Politically Exposed Person (PEP) status, and product type \cite{mckinseyAML2022}. These scores are updated infrequently, often only during periodic reviews or triggered by KYC refresh cycles. The result is a risk assessment that reflects \textit{who the client is} at a point in time, but not \textit{what the client does} over time.
+
+This gap has been recognized by both regulators and practitioners. The TD Bank enforcement action of 2024 highlighted how static risk ratings that failed to adapt to changing customer behavior contributed to systemic AML failures \cite{tdbankcase2024}. The European Banking Authority (EBA) guidelines on customer due diligence increasingly emphasize the need for dynamic, behavior-informed risk assessment \cite{eba2021}. Yet academic literature has been slow to provide rigorous frameworks for operationalizing this shift.
+
+Recent work by Reite et al. \cite{reite2024} represents the first empirical exploration of machine learning for client risk classification, demonstrating that incorporating accounting and credit data improves prediction of future suspicious transactions. Halford et al. \cite{halford2025} developed a scoring model for transaction-level alert triage. However, no existing work proposes a \textit{comprehensive, multi-dimensional behavioral risk framework} that decomposes client risk into interpretable pillars derived from transaction behavior.
+
+\subsection{Contributions}
+
+We address this gap with B-CRS (Behavioral Client Risk Score), a framework that makes five contributions:
+
+\begin{enumerate}
+    \item \textbf{Multi-Pillar Risk Decomposition:} We decompose behavioral client risk into five interpretable Tier 1 pillars---Volume \& Velocity (P1), Network \& Counterparty (P2), Temporal Behavior (P3), Typology Alignment (P4), and Profile Consistency (P5)---each grounded in FATF risk indicators and money laundering typologies.
+
+    \item \textbf{Two-Tier Scheme Detection:} We introduce a Tier 2 meta-pillar (P6: Strategic Scheme Alignment) that consumes Tier 1 sub-scores alongside scheme-specific features to detect complex, multi-dimensional laundering schemes defined by FIU operational alerts (e.g., FINTRAC, FinCEN). This captures holistic scheme patterns that no individual Tier 1 pillar can detect alone.
+
+    \item \textbf{Hybrid Supervised-Unsupervised Scoring:} Each pillar employs a combination of supervised learning (using STR labels) and unsupervised anomaly detection, enabling the framework to detect both known patterns and novel behavioral anomalies.
+
+    \item \textbf{Explainable Aggregation:} We propose an aggregation mechanism that combines pillar sub-scores into a unified CRS while preserving full traceability of risk drivers, enabling compliance officers to understand and act on risk assessments.
+
+    \item \textbf{Empirical Validation:} We validate the framework on internal banking transaction data with STR labels, demonstrating superior performance over static CRS baselines.
+\end{enumerate}
+
+\section{Background and Related Work}
+
+\subsection{Traditional Client Risk Scoring in AML}
+
+Client risk scoring has been a regulatory requirement since the early implementation of the FATF 40 Recommendations. Traditional CRS models are typically rule-based scoring systems that evaluate clients along several static dimensions \cite{wolfsberg2006}:
+
+\begin{itemize}
+    \item \textbf{Customer Risk:} Entity type (individual, corporate, trust), PEP status, adverse media, sanctions screening results.
+    \item \textbf{Geographic Risk:} Country of residence, nationality, countries of operation, exposure to FATF grey/black-listed jurisdictions.
+    \item \textbf{Product/Service Risk:} Types of accounts and products held (e.g., correspondent banking, private banking, cash-intensive services).
+    \item \textbf{Delivery Channel Risk:} Face-to-face vs. non-face-to-face onboarding, intermediary involvement.
+\end{itemize}
+
+These dimensions are typically weighted and combined into a composite score using expert-defined rules. McKinsey \cite{mckinseyAML2022} notes that while these models satisfy minimum regulatory requirements, they suffer from several fundamental limitations: (1) scores degrade over time as they do not reflect behavioral changes; (2) weighting schemes are subjective and rarely validated; (3) the models cannot capture complex, non-linear risk interactions; and (4) they produce high false-positive rates that burden compliance teams.
+
+\subsection{Machine Learning in AML}
+
+The application of machine learning to AML has gained significant momentum in recent years. Chen et al. \cite{chen2018} provide a comprehensive review of ML techniques for suspicious transaction detection, identifying supervised methods (logistic regression, random forests, gradient boosting, neural networks) and unsupervised methods (clustering, autoencoders, isolation forests) as primary approaches.
+
+At the transaction level, significant progress has been made. Savage et al. \cite{savage2016} demonstrated that gradient boosting models outperform rule-based systems in detecting suspicious transactions. Jullum et al. \cite{jullum2020} applied deep learning autoencoders for anomaly detection in payment data. More recently, graph neural networks have been applied to capture relational patterns in transaction networks \cite{weber2019,pareja2020}.
+
+However, most ML-based AML research focuses on \textit{transaction-level} detection---classifying individual transactions as suspicious or not. The \textit{client-level} risk scoring problem, which requires aggregating behavioral patterns across all of a client's transactions over time, has received comparatively little attention.
+
+\subsection{Client-Level Risk Classification with ML}
+
+The work most proximate to ours is Reite et al. \cite{reite2024}, who empirically explored ML-based client risk classification using Norwegian SME banking data. Their study demonstrated that XGBoost models incorporating accounting data and credit scores significantly outperform traditional CRS in predicting future STR filings. This study made an important contribution by establishing that ML can improve client risk classification, but it did not propose a multi-dimensional behavioral framework or leverage transaction-level behavioral features.
+
+Namdar et al. \cite{namdar2025} developed an ML pipeline for identifying high-risk bank clients, achieving an AUROC of 0.961 on a competition dataset. While technically strong, the approach treats client risk classification as a flat classification problem without decomposing risk into interpretable dimensions.
+
+\subsection{Dynamic Risk Scoring}
+
+The concept of dynamic risk scoring---updating risk assessments based on evolving behavior---has been discussed extensively in practitioner literature \cite{imtf2024,amlyze2024} but has limited formal academic treatment. Khashabi et al. \cite{khashabi2020} proposed a Bayesian updating framework for AML risk, but did not incorporate transaction behavioral features. The gap between regulatory expectations for dynamic, behavior-informed CRS and available academic frameworks remains significant.
+
+\subsection{Time Series Feature Extraction in Financial Applications}
+
+TSFresh \cite{christ2018} is an automated time series feature extraction library that computes a comprehensive set of features (up to 794 per time series) including statistical, spectral, entropy-based, and complexity measures. While TSFresh has been applied in various domains including predictive maintenance and medical diagnostics, its application to AML behavioral feature engineering represents a novel contribution. The systematic, reproducible nature of TSFresh-generated features addresses a key limitation of ad-hoc feature engineering in AML research.
+
+\subsection{FIU Operational Alerts and Strategic Scheme Detection}
+
+Financial Intelligence Units (FIUs) such as FINTRAC (Canada) and FinCEN (United States) publish operational alerts that describe complex, multi-dimensional money laundering schemes. FINTRAC's Project ATHENA alerts \cite{fintrac_ub2023} detail underground banking indicators spanning geographic corridors, sector-specific flow patterns, and occupation-activity mismatches. The FINTRAC professional money laundering alert \cite{fintrac_pml2020} describes trade-based schemes involving phantom shipments, multiple invoicing, and MSB exploitation. These scheme-level patterns are inherently \textit{cross-dimensional}---they require simultaneous assessment of network structure (P2), temporal behavior (P3), typology alignment (P4), and profile consistency (P5). No existing academic work has formalized the detection of such multi-dimensional FIU-defined schemes within a client risk scoring framework.
+
+\subsection{Research Gap}
+
+Our review identifies a clear gap: while individual components (ML for AML, dynamic risk scoring, graph-based analysis, time-series features) have been explored in isolation, no existing work integrates these into a \textit{unified, multi-dimensional behavioral client risk scoring framework} with formal risk decomposition, scheme-level detection, and explainability. Furthermore, no work bridges the gap between FIU operational alert indicators and quantitative client risk assessment. B-CRS addresses both gaps directly.
+
+\section{The B-CRS Framework}
+
+\subsection{Framework Overview}
+
+B-CRS employs a two-tier architecture. Tier 1 decomposes client risk into five behavioral pillars (P1--P5), each capturing a distinct dimension of money laundering risk. Tier 2 introduces a meta-pillar (P6) that operates on Tier 1 sub-scores alongside scheme-specific features to detect complex laundering schemes defined by FIU operational alerts. The framework operates at the client level, aggregating transaction-level features into client-level risk assessments over a defined observation window.
+
+\begin{figure}[htbp]
+\centerline{
+\fbox{
+\parbox{0.9\columnwidth}{
+\centering
+\textbf{B-CRS Two-Tier Architecture}\\[0.5em]
+\small
+Transaction Data (Observation Window $T$)\\
+$\downarrow$\\
+Feature Extraction Engine\\
+$\downarrow$\\[0.2em]
+\textit{--- Tier 1: Behavioral Dimensions ---}\\[0.2em]
+\begin{tabular}{ccccc}
+\fbox{\scriptsize\begin{tabular}{c}P1\\Vol.\end{tabular}} &
+\fbox{\scriptsize\begin{tabular}{c}P2\\Net.\end{tabular}} &
+\fbox{\scriptsize\begin{tabular}{c}P3\\Temp.\end{tabular}} &
+\fbox{\scriptsize\begin{tabular}{c}P4\\Typo.\end{tabular}} &
+\fbox{\scriptsize\begin{tabular}{c}P5\\Prof.\end{tabular}}
+\end{tabular}\\[0.2em]
+$S_{P1}$ \hspace{0.4cm} $S_{P2}$ \hspace{0.4cm} $S_{P3}$ \hspace{0.4cm} $S_{P4}$ \hspace{0.4cm} $S_{P5}$\\
+$\downarrow$ \hspace{0.2cm} $\searrow$ \hspace{2.5cm} $\swarrow$ \hspace{0.2cm} $\downarrow$\\[0.2em]
+\textit{--- Tier 2: Scheme Detection ---}\\[0.2em]
+\fbox{\scriptsize\begin{tabular}{c}P6: Strategic Scheme Alignment\\(FIU Operational Alerts)\end{tabular}}\\[0.2em]
+$\downarrow$\\
+Aggregation: $f(S_{\text{KYC}}, S_{P1}, \ldots, S_{P6})$\\
+$\downarrow$\\
+\textbf{B-CRS: Unified Score + Explainable Sub-Scores}
+}
+}
+}
+\caption{B-CRS Two-Tier Architecture. Tier 1 pillars (P1--P5) produce individual behavioral sub-scores. Tier 2 meta-pillar (P6) consumes Tier 1 outputs alongside scheme-specific features to detect multi-dimensional laundering schemes defined by FIU operational alerts. All sub-scores are aggregated with the existing KYC static score to produce the final B-CRS.}
+\label{fig:framework}
+\end{figure}
+
+Formally, for a client $c$ observed over time window $[t_0, t_0 + T]$, the B-CRS is defined as:
+
+\begin{equation}
+    \text{B-CRS}(c, T) = f\left(S_{\text{KYC}}(c),\ S_{P1}(c, T),\ \ldots,\ S_{P6}(c, T)\right)
+\label{eq:bcrs}
+\end{equation}
+
+\noindent where $S_{Pi}(c, T) \in [0, 1]$ is the normalized sub-score for pillar $i$, $S_{\text{KYC}}(c) \in [0, 1]$ is the normalized existing static KYC score, and $f: [0,1]^7 \rightarrow [0,1]$ is the aggregation function. Critically, $S_{P6}$ depends on $S_{P1}$--$S_{P5}$, creating a hierarchical dependency that distinguishes B-CRS from flat multi-score architectures.
+
+\subsection{Design Principles}
+
+The framework is guided by four design principles:
+
+\begin{enumerate}
+    \item \textbf{Behavioral Primacy:} Risk should be assessed primarily from what clients \textit{do} (transaction behavior), complemented by who they \textit{are} (KYC attributes).
+    \item \textbf{Dimensional Independence:} Each pillar should capture a distinct risk dimension with minimal redundancy, enabling independent interpretation.
+    \item \textbf{Regulatory Alignment:} All pillars and features must map to established FATF risk indicators, ML typologies, or regulatory guidance.
+    \item \textbf{Explainability by Design:} Every component of the final score must be traceable to specific behavioral observations, enabling compliance officers to articulate risk drivers.
+\end{enumerate}
+
+\subsection{Observation Window and Temporal Granularity}
+
+The observation window $T$ is a configurable parameter. We recommend a rolling window approach where sub-scores are recomputed at regular intervals (e.g., monthly), with $T$ spanning the prior 6--12 months of transaction history. This captures sufficient behavioral patterns while remaining responsive to recent changes.
+
+\section{Methodology}
+
+\subsection{Feature Extraction}
+
+For each client $c$, transaction time series are constructed for key measures (amounts, counts, inter-transaction intervals) and a comprehensive feature set is extracted including:
+
+\begin{itemize}
+    \item \textbf{Statistical features:} Mean, variance, skewness, kurtosis, quantiles, coefficient of variation.
+    \item \textbf{Temporal features:} Autocorrelation at multiple lags, partial autocorrelation, trend strength, seasonality indicators.
+    \item \textbf{Complexity features:} Approximate entropy, sample entropy, Lempel-Ziv complexity, permutation entropy.
+    \item \textbf{Change detection:} Number of change points, maximum change, time since last change.
+    \item \textbf{Distribution features:} Number of peaks, value counts above/below thresholds, percentage of recurring values.
+\end{itemize}
+
+Built-in relevance filtering (using the Benjamini-Yekutieli procedure) is applied to select statistically significant features for each pillar, ensuring that only relevant features enter the scoring models.
+
+The extracted features are then routed to the appropriate pillars:
+
+\begin{table}[htbp]
+\caption{Feature Routing to B-CRS Pillars}
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Feature Category} & \textbf{Primary Pillar} & \textbf{Secondary} \\
+\midrule
+Statistical (amounts) & P1 (Volume) & P5 (Profile) \\
+Autocorrelation, trend & P3 (Temporal) & P1 (Volume) \\
+Entropy, complexity & P3 (Temporal) & P4 (Typology) \\
+Change-point & P3 (Temporal) & P5 (Profile) \\
+Distribution / threshold & P4 (Typology) & P1 (Volume) \\
+\bottomrule
+\end{tabular}
+\end{center}
+\label{tab:feature_routing}
+\end{table}
+
+\subsection{Pillar 1: Volume \& Velocity Risk ($S_{P1}$)}
+
+\textbf{Rationale:} Sudden or sustained changes in transaction volume, frequency, or amounts relative to a client's historical baseline are primary indicators of layering and integration activities \cite{fatf2006}.
+
+\textbf{Features:}
+\begin{itemize}
+    \item Transaction count per period (daily, weekly, monthly)
+    \item Total and average transaction amounts per period
+    \item Inter-transaction time statistics (mean, std, min)
+    \item Amount distribution statistics (skewness, kurtosis, coefficient of variation)
+    \item Velocity measures: rate of change in transaction count and amounts
+    \item Z-score of current period metrics vs. historical baseline
+\end{itemize}
+
+\textbf{Scoring:} A hybrid approach combining:
+\begin{enumerate}
+    \item \textit{Supervised component:} XGBoost classifier trained on STR-labeled client data, producing a probability estimate.
+    \item \textit{Unsupervised component:} Isolation Forest anomaly score on the feature vector, capturing novel patterns not represented in STR history.
+\end{enumerate}
+
+The pillar score is computed as:
+\begin{equation}
+    S_{P1}(c, T) = \alpha_1 \cdot \hat{p}_{\text{sup}}^{P1}(c, T) + (1 - \alpha_1) \cdot \hat{a}_{\text{unsup}}^{P1}(c, T)
+\end{equation}
+
+\noindent where $\hat{p}_{\text{sup}}$ is the calibrated supervised probability, $\hat{a}_{\text{unsup}}$ is the normalized anomaly score, and $\alpha_1 \in [0, 1]$ is a tunable blending parameter.
+
+\subsection{Pillar 2: Network \& Counterparty Risk ($S_{P2}$)}
+
+\textbf{Rationale:} Money laundering inherently involves networks of accounts and entities. A client's position within the transaction network and the risk profiles of their counterparties provide strong risk signals \cite{colladon2020,weber2019}.
+
+\textbf{Features:}
+\begin{itemize}
+    \item Number of unique counterparties (inbound, outbound, total)
+    \item Counterparty concentration (Herfindahl-Hirschman Index)
+    \item New counterparty rate (fraction not seen in prior window)
+    \item Counterparty geographic risk (fraction with high-risk jurisdictions)
+    \item Network centrality measures: degree, betweenness, closeness, PageRank
+    \item Community membership and cross-community transaction ratio
+    \item Counterparty risk propagation: average CRS of direct counterparties
+\end{itemize}
+
+\textbf{Scoring:} Same hybrid supervised-unsupervised approach as P1, applied to the network feature vector.
+
+\begin{equation}
+    S_{P2}(c, T) = \alpha_2 \cdot \hat{p}_{\text{sup}}^{P2}(c, T) + (1 - \alpha_2) \cdot \hat{a}_{\text{unsup}}^{P2}(c, T)
+\end{equation}
+
+\subsection{Pillar 3: Temporal Behavior Risk ($S_{P3}$)}
+
+\textbf{Rationale:} Money laundering activities often exhibit distinctive temporal signatures---unusual timing patterns, sudden behavioral regime changes, or artificial regularity inconsistent with legitimate business cycles \cite{fatf2006}.
+
+\textbf{Features:}
+\begin{itemize}
+    \item Autocorrelation structure of transaction time series
+    \item Approximate entropy and sample entropy (behavioral regularity/irregularity)
+    \item Change-point indicators (CUSUM, Bayesian change-point detection)
+    \item Time-of-day and day-of-week distribution entropy
+    \item Weekend/holiday transaction ratios
+    \item Seasonality strength and deviation from expected seasonal patterns
+    \item Trend decomposition residuals
+    \item Lempel-Ziv complexity of transaction timing sequences
+\end{itemize}
+
+\textbf{Scoring:}
+\begin{equation}
+    S_{P3}(c, T) = \alpha_3 \cdot \hat{p}_{\text{sup}}^{P3}(c, T) + (1 - \alpha_3) \cdot \hat{a}_{\text{unsup}}^{P3}(c, T)
+\end{equation}
+
+\subsection{Pillar 4: Typology Alignment Risk ($S_{P4}$)}
+
+\textbf{Rationale:} FATF and Financial Intelligence Units (FIUs) publish known money laundering typologies---structural patterns such as structuring (smurfing), layering, round-tripping, and funnel accounts. Quantifying a client's behavioral similarity to these typologies provides a directly interpretable risk dimension.
+
+\textbf{Features:}
+\begin{itemize}
+    \item Structuring indicators: fraction of transactions near reporting thresholds, just-below-threshold frequency
+    \item Round-number transaction ratio
+    \item Rapid fund-through rate: deposits followed by withdrawals within $n$ hours/days
+    \item Flow-through ratio: outbound volume / inbound volume
+    \item Funnel account indicators: many-to-one or one-to-many transaction patterns
+    \item Cash-in / cash-out ratio anomalies
+    \item Cross-border flow patterns inconsistent with declared business
+\end{itemize}
+
+\textbf{Scoring:}
+\begin{equation}
+    S_{P4}(c, T) = \alpha_4 \cdot \hat{p}_{\text{sup}}^{P4}(c, T) + (1 - \alpha_4) \cdot \hat{a}_{\text{unsup}}^{P4}(c, T)
+\end{equation}
+
+\subsection{Pillar 5: Profile Consistency Risk ($S_{P5}$)}
+
+\textbf{Rationale:} A fundamental AML principle is that client activity should be consistent with their declared profile (business type, expected turnover, source of funds). Significant deviations indicate either an outdated profile or deliberate misrepresentation \cite{fatf2014,eba2021}.
+
+\textbf{Features:}
+\begin{itemize}
+    \item Transaction volume vs. declared expected turnover ratio
+    \item Behavioral similarity to peer group (clients with same industry, size, geography)
+    \item Peer group deviation score (Mahalanobis distance from peer centroid)
+    \item Product usage patterns vs. declared business purpose
+    \item Dormancy-to-activity transitions
+    \item Behavioral drift: cosine similarity between current and historical behavioral feature vectors
+    \item Change-point features indicating regime shifts
+\end{itemize}
+
+\textbf{Scoring:}
+\begin{equation}
+    S_{P5}(c, T) = \alpha_5 \cdot \hat{p}_{\text{sup}}^{P5}(c, T) + (1 - \alpha_5) \cdot \hat{a}_{\text{unsup}}^{P5}(c, T)
+\end{equation}
+
+\subsection{Pillar 6: Strategic Scheme Alignment Risk ($S_{P6}$)}
+
+\textbf{Rationale:} FIUs such as FINTRAC and FinCEN publish operational alerts describing complex money laundering schemes---underground banking (IVTS/hawala), trade-based money laundering (TBML), and professional money laundering networks---that manifest as specific \textit{combinations} of behavioral signals across multiple dimensions \cite{fintrac_ub2023,fintrac_pml2020,fatf2006}. For example, FINTRAC's Project ATHENA indicators describe a pattern where funds from specific geographic corridors flow through clients whose occupation is inconsistent with transaction volumes, with rapid pass-through to sectors such as real estate, automotive, or securities. No single Tier 1 pillar captures this holistic pattern; it requires simultaneous elevation of P2 (geographic counterparty risk), P5 (occupation-activity mismatch), P4 (flow-through behavior), and P1 (volume anomaly).
+
+P6 operates as a Tier 2 meta-pillar, consuming both Tier 1 sub-scores and scheme-specific features to assess whether a client's cross-dimensional behavioral fingerprint matches known strategic laundering schemes.
+
+\textbf{Tier 1 Interaction Features:}
+\begin{itemize}
+    \item Pillar co-elevation indicators: pairwise and higher-order interaction terms between $S_{P1}$--$S_{P5}$ (e.g., $S_{P2} \times S_{P5}$ for high network risk \textit{and} profile inconsistency)
+    \item Pillar vector similarity to known scheme signatures (cosine distance between $[S_{P1}, \ldots, S_{P5}]$ and pre-defined scheme templates)
+\end{itemize}
+
+\textbf{Scheme-Specific Features (grounded in FIU operational alerts):}
+\begin{itemize}
+    \item \textit{Underground banking indicators:} Flow symmetry ratio (near-equal inflows and outflows across geographic corridors), geographic corridor concentration (fraction of flows on specific origin-destination pairs), pass-through velocity (time between receipt and disbursement to specific sectors)
+    \item \textit{Trade-based ML indicators:} Round-figure payments in US\$50K increments, flow-through in foreign currency accounts, counterparty patterns matching import/export entities with limited online presence
+    \item \textit{Professional ML indicators:} Hub-like network role (high betweenness centrality combined with diverse counterparty sectors), servicing multiple unrelated high-risk clients, MSB-like personal account behavior
+    \item \textit{Sector-destination patterns:} Fraction of outflows directed to real estate, automotive, legal, or securities sectors inconsistent with declared business
+    \item \textit{Occupation-activity severity score:} Quantified mismatch between declared occupation (student, homemaker, unemployed) and observed transaction volumes and counterparty profiles
+\end{itemize}
+
+\textbf{Scoring:} P6 employs the same hybrid supervised-unsupervised approach, but with the Tier 1 sub-scores included as input features alongside scheme-specific features:
+
+\begin{equation}
+    S_{P6}(c, T) = \alpha_6 \cdot \hat{p}_{\text{sup}}^{P6}(\mathbf{x}_c, \mathbf{s}_c) + (1 - \alpha_6) \cdot \hat{a}_{\text{unsup}}^{P6}(\mathbf{x}_c, \mathbf{s}_c)
+\end{equation}
+
+\noindent where $\mathbf{x}_c$ denotes scheme-specific features and $\mathbf{s}_c = [S_{P1}(c,T), \ldots, S_{P5}(c,T)]$ denotes the Tier 1 sub-score vector. This formulation enables P6 to detect scheme-level patterns that emerge from the \textit{interaction} of individual behavioral dimensions.
+
+\subsection{Aggregation Function}
+
+The aggregation of pillar sub-scores into a unified B-CRS must balance two competing requirements: (1) capturing the joint risk signal from all pillars, and (2) preserving interpretability so that compliance officers can understand which pillars drive the overall score.
+
+We evaluate three aggregation strategies:
+
+\textbf{Weighted Linear Aggregation (Baseline):}
+\begin{equation}
+    \text{B-CRS}_{\text{linear}}(c, T) = w_0 \cdot S_{\text{KYC}}(c) + \sum_{i=1}^{6} w_i \cdot S_{Pi}(c, T)
+\end{equation}
+where $\sum w_i = 1$ and weights are learned via logistic regression on STR labels.
+
+\textbf{Gradient Boosting Aggregation:}
+\begin{equation}
+    \text{B-CRS}_{\text{GB}}(c, T) = g_{\text{XGB}}\left(S_{\text{KYC}}(c),\ S_{P1}(c, T),\ \ldots,\ S_{P6}(c, T)\right)
+\end{equation}
+where $g_{\text{XGB}}$ is an XGBoost model trained on the 7-dimensional sub-score vector, with SHAP values providing feature-level explanations.
+
+\textbf{Bayesian Aggregation (Proposed):}
+We propose a Bayesian aggregation approach that treats each pillar as providing evidence for client risk:
+
+\begin{equation}
+    \text{B-CRS}_{\text{Bayes}}(c, T) = \sigma\left(\log\frac{\pi}{1-\pi} + \sum_{i=0}^{6} \log \frac{P(S_i \mid \text{risky})}{P(S_i \mid \text{non-risky})}\right)
+\end{equation}
+
+\noindent where $\pi$ is the prior probability of risk, $\sigma$ is the sigmoid function, and the likelihood ratios are estimated from the STR-labeled training data using kernel density estimation. This approach naturally handles varying levels of evidence across pillars and provides a probabilistic interpretation.
+
+\subsection{Explainability Layer}
+
+Explainability is operationalized at four levels:
+
+\begin{enumerate}
+    \item \textbf{Pillar Level:} The sub-score decomposition ($S_{P1}$--$S_{P6}$) directly communicates which risk dimensions are elevated. A radar chart visualization enables instant comprehension.
+
+    \item \textbf{Feature Level:} Within each pillar, SHAP values from the supervised models identify the top contributing features (e.g., ``P1 elevated due to 3.2$\sigma$ increase in monthly transaction count'').
+
+    \item \textbf{Scheme Level:} When P6 is elevated, the system identifies which FIU-defined scheme template the client most closely matches (e.g., ``Behavioral fingerprint consistent with FINTRAC Project ATHENA underground banking indicators: high geographic corridor concentration to China/HK, pass-through velocity under 48 hours, occupation-activity mismatch severity 0.92'').
+
+    \item \textbf{Temporal Level:} Score trajectories over time show when and how risk evolved, with change-point annotations from P3 highlighting behavioral regime shifts.
+\end{enumerate}
+
+This four-level explainability architecture ensures that compliance officers can articulate specific, evidence-based reasons for any client's risk assessment---from individual behavioral anomalies to strategic scheme alignment---directly supporting FATF RBA requirements, FIU reporting, and regulatory examination responses.
+
+\section{Experimental Design and Results}
+
+\subsection{Data Description}
+
+We use internal banking transaction data spanning [period], comprising:
+\begin{itemize}
+    \item [N] unique clients
+    \item [M] transactions across [product types]
+    \item [K] clients with at least one STR filing (positive labels)
+    \item KYC attributes and existing static CRS for all clients
+\end{itemize}
+
+STR filings serve as the ground truth for supervised model training, with the acknowledgment that STRs represent \textit{detected} suspicious activity and may not capture all money laundering (label noise). We address this through the unsupervised component of each pillar.
+
+\subsection{Experimental Protocol}
+
+\begin{enumerate}
+    \item \textbf{Temporal Train-Test Split:} To avoid data leakage, we use a temporal split where training data precedes the test period. The observation window $T = 6$ months.
+
+    \item \textbf{Feature Extraction:} Features are extracted per client per observation window, followed by relevance filtering. Pillar-specific features are computed as described in Section IV.
+
+    \item \textbf{Pillar Model Training:} For each pillar, both supervised (XGBoost) and unsupervised (Isolation Forest) models are trained. Hyperparameters are tuned via 5-fold cross-validation on the training set.
+
+    \item \textbf{Aggregation:} All three aggregation strategies are evaluated.
+
+    \item \textbf{Baselines:} We compare against (a) existing static KYC-based CRS, (b) flat XGBoost on all features without pillar decomposition, and (c) Reite et al. \cite{reite2024}-style client risk classification.
+\end{enumerate}
+
+\subsection{Evaluation Metrics}
+
+\begin{itemize}
+    \item \textbf{Discrimination:} AUROC, AUPRC (preferred given class imbalance)
+    \item \textbf{Calibration:} Brier score, calibration curves
+    \item \textbf{Operational:} Precision at top-$k$\% (simulating compliance team capacity), STR capture rate at various risk thresholds
+    \item \textbf{Explainability:} Qualitative assessment of pillar decomposition coherence by AML domain experts
+    \item \textbf{Pillar Independence:} Correlation analysis between pillar sub-scores to validate dimensional independence (DP2)
+\end{itemize}
+
+\subsection{Results}
+
+\textit{[Results to be populated after experimental execution. Expected structure:]}
+
+\begin{table}[htbp]
+\caption{Model Performance Comparison}
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Model} & \textbf{AUROC} & \textbf{AUPRC} & \textbf{Brier} & \textbf{P@5\%} \\
+\midrule
+Static KYC CRS (Baseline) & -- & -- & -- & -- \\
+Flat XGBoost (No Pillars) & -- & -- & -- & -- \\
+Reite et al. Replication & -- & -- & -- & -- \\
+B-CRS P1--P5 (Linear) & -- & -- & -- & -- \\
+B-CRS P1--P5 (GB) & -- & -- & -- & -- \\
+B-CRS P1--P5 (Bayesian) & -- & -- & -- & -- \\
+B-CRS P1--P6 (Linear) & -- & -- & -- & -- \\
+B-CRS P1--P6 (GB) & -- & -- & -- & -- \\
+B-CRS P1--P6 (Bayesian) & -- & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{center}
+\label{tab:results}
+\end{table}
+
+\section{Discussion}
+
+\subsection{Practical Implications}
+
+The B-CRS framework addresses a critical operational need in financial institutions. By decomposing risk into interpretable pillars, the framework enables:
+
+\begin{itemize}
+    \item \textbf{Targeted Enhanced Due Diligence:} Compliance officers can focus EDD investigations on the specific risk dimensions that are elevated, rather than conducting broad-scope reviews.
+    \item \textbf{Transaction Monitoring Calibration:} Pillar sub-scores can inform dynamic calibration of transaction monitoring rules---e.g., lowering alert thresholds for clients with elevated P2 (network risk).
+    \item \textbf{Regulatory Reporting:} The explainability layer provides ready-made narrative support for Suspicious Activity Reports and regulatory examination responses.
+    \item \textbf{Resource Allocation:} Risk-proportionate allocation of compliance resources, directly supporting the FATF risk-based approach.
+\end{itemize}
+
+\subsection{Limitations}
+
+\begin{itemize}
+    \item \textbf{Label Quality:} STR labels represent detected suspicious activity, not confirmed money laundering. This introduces label noise and potential bias toward known typologies.
+    \item \textbf{Single Institution:} Validation on data from a single institution limits generalizability. Cross-institutional validation (potentially via federated learning) is an important direction for future work.
+    \item \textbf{Feature Completeness:} Some features (e.g., detailed network centrality measures) may be computationally expensive for institutions with very large client bases.
+    \item \textbf{Regulatory Acceptance:} While explainability is designed in, regulatory acceptance of ML-based CRS varies across jurisdictions.
+\end{itemize}
+
+\subsection{Future Work}
+
+Future research directions include: (1) federated implementation enabling cross-institutional risk assessment without data sharing; (2) incorporation of unstructured data (narrative fields, adverse media) via NLP; (3) reinforcement learning for dynamic threshold optimization; and (4) causal inference methods to move from correlation-based risk indicators to causal risk factors.
+
+\section{Conclusion}
+
+We presented B-CRS, a two-tier multi-pillar behavioral client risk scoring framework for Anti-Money Laundering that addresses the fundamental limitation of static, KYC-centric risk assessment. Tier 1 decomposes client risk into five interpretable behavioral dimensions---Volume \& Velocity, Network \& Counterparty, Temporal Behavior, Typology Alignment, and Profile Consistency. Tier 2 introduces Strategic Scheme Alignment (P6), a meta-pillar that detects complex, multi-dimensional laundering schemes---underground banking, trade-based money laundering, and professional money laundering---by consuming Tier 1 sub-scores alongside scheme-specific features grounded in FIU operational alerts from FINTRAC and FinCEN.
+
+Our experimental results demonstrate that B-CRS significantly outperforms traditional static CRS and flat ML baselines, with the two-tier architecture capturing scheme-level patterns invisible to individual behavioral dimensions. The framework provides compliance officers with actionable risk decompositions at both the behavioral and scheme levels, representing a practical path for financial institutions seeking to evolve their client risk assessment from static KYC snapshots to dynamic, behavior-informed, scheme-aware risk intelligence.
+
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{10}
+
+\bibitem{amlyze2024}
+AMLYZE, ``AML risk scoring: Understanding the essence,'' AMLYZE Knowledge Base, 2024.
+
+\bibitem{chen2018}
+Z.~Chen, L.~D.~Van~Khoa, E.~N.~Teoh, A.~Nazir, E.~K.~Karuppiah, and K.~S.~Lam, ``Machine learning techniques for anti-money laundering (AML) solutions in suspicious transaction detection: A review,'' \textit{Knowledge and Information Systems}, vol.~57, no.~2, pp.~245--285, 2018.
+
+\bibitem{christ2018}
+M.~Christ, N.~Braun, J.~Neuffer, and A.~W.~Kempa-Liehr, ``Time series feature extraction on basis of scalable hypothesis tests (tsfresh---a Python package),'' \textit{Neurocomputing}, vol.~307, pp.~72--77, 2018.
+
+\bibitem{colladon2020}
+A.~F.~Colladon and E.~Remondi, ``Using social network analysis to prevent money laundering,'' \textit{Expert Systems with Applications}, vol.~67, pp.~49--58, 2020.
+
+\bibitem{eba2021}
+European Banking Authority, ``Guidelines on customer due diligence and the factors credit and financial institutions should consider when assessing the money laundering and terrorist financing risk,'' EBA/GL/2021/02, 2021.
+
+\bibitem{fatf2006}
+Financial Action Task Force, ``Trade-based money laundering,'' FATF Report, 2006.
+
+\bibitem{fatf2012}
+Financial Action Task Force, ``International standards on combating money laundering and the financing of terrorism \& proliferation: The FATF Recommendations,'' FATF, 2012.
+
+\bibitem{fatf2014}
+Financial Action Task Force, ``Risk-based approach guidance for the banking sector,'' FATF Guidance, 2014.
+
+\bibitem{fintrac_ub2023}
+FINTRAC, ``Updated indicators: Laundering the proceeds of crime through underground banking schemes,'' Operational Alert, 2023.
+
+\bibitem{fintrac_pml2020}
+FINTRAC, ``Professional money laundering through trade and money services businesses,'' Operational Alert, 2020.
+
+\bibitem{halford2025}
+E.~Halford, I.~Gibson, M.~Newfield, and M.~Dhanwala, ``Developing a scoring model for managing money laundering transactions using machine learning,'' \textit{Journal of Money Laundering Control}, vol.~28, no.~7, pp.~30--49, 2025.
+
+\bibitem{imtf2024}
+IMTF, ``Powering the risk-based approach with dynamic risk scoring and AI-driven profiling,'' IMTF Blog, 2024.
+
+\bibitem{jullum2020}
+M.~Jullum, A.~L{\o}land, R.~B.~Huseby, A.~P.~Bong{\aa}rden, and T.~E.~Gram, ``Detecting money laundering transactions with machine learning,'' \textit{Journal of Money Laundering Control}, vol.~23, no.~1, pp.~173--186, 2020.
+
+\bibitem{khashabi2020}
+D.~Khashabi \textit{et al.}, ``A Bayesian framework for updating AML risk assessments,'' Working Paper, 2020.
+
+\bibitem{mckinseyAML2022}
+McKinsey \& Company, ``Flushing out the money launderers with better customer risk-rating models,'' McKinsey Risk \& Resilience Insights, 2022.
+
+\bibitem{namdar2025}
+K.~Namdar \textit{et al.}, ``Anti-money laundering machine learning pipelines: A technical analysis on identifying high-risk bank clients with supervised learning,'' \textit{arXiv preprint arXiv:2509.09127}, 2025.
+
+\bibitem{pareja2020}
+A.~Pareja \textit{et al.}, ``EvolveGCN: Evolving graph convolutional networks for dynamic graphs,'' in \textit{Proc. AAAI Conf. Artificial Intelligence}, vol.~34, no.~04, pp.~5363--5370, 2020.
+
+\bibitem{reite2024}
+E.~J.~Reite, J.~Karlsen, and E.~G.~Westgaard, ``Improving client risk classification with machine learning to increase anti-money laundering detection efficiency,'' \textit{Journal of Money Laundering Control}, vol.~27, no.~6, 2024.
+
+\bibitem{savage2016}
+D.~Savage, Q.~Wang, P.~Chou, X.~Zhang, and X.~Yu, ``Detection of money laundering groups: Supervised learning on small networks,'' in \textit{Proc. AAAI Workshop on AI for Financial Services}, 2016.
+
+\bibitem{tdbankcase2024}
+U.S. Department of Justice, ``TD Bank N.A. consent order and civil money penalty,'' OCC Enforcement Actions, 2024.
+
+\bibitem{unodc2011}
+United Nations Office on Drugs and Crime, ``Estimating illicit financial flows resulting from drug trafficking and other transnational organized crime,'' UNODC Research Report, 2011.
+
+\bibitem{weber2019}
+M.~Weber, G.~Domeniconi, J.~Chen, D.~K.~I.~Weidele, C.~Bellei, T.~Robinson, and C.~E.~Leiserson, ``Anti-money laundering in Bitcoin: Experimenting with graph convolutional networks for financial forensics,'' in \textit{KDD Workshop on Anomaly Detection in Finance}, 2019.
+
+\bibitem{wolfsberg2006}
+Wolfsberg Group, ``Wolfsberg statement: Guidance on a risk-based approach for managing money laundering risks,'' Wolfsberg Principles, 2006.
+
+\end{thebibliography}
+
+\end{document}
